@@ -1,5 +1,68 @@
 # Day 11 — Controlled Agent Security (2026)
 
+**Học viên: Nguyễn Văn Đăng · MSSV: 2A202603371 · Khóa 5, L3**
+
+Bài làm triển khai guardrails input/output, sliding-window rate limit theo user,
+audit có request ID, monitoring, egress allowlist và 5 kịch bản red-team (có một
+kịch bản nhiều lượt hội thoại). Phần HITL tham khảo có router và 3 điểm duyệt.
+
+### Chạy bài làm
+
+Chạy từ gốc repo bằng PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+# File .env chỉ nằm trên máy; sao chép nếu chưa có:
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+# Điền OPENROUTER_API_KEY cho Blue và OPENAI_API_KEY cho Red.
+# Hoặc chọn RED_TEAM_PROVIDER=gemini và điền GOOGLE_API_KEY cho Red.
+.\scripts\run_lab.ps1
+```
+
+Nếu PowerShell không cho chạy file `.ps1`, chạy từng lệnh:
+
+```powershell
+.\.venv\Scripts\python.exe src/main.py --part 2
+.\.venv\Scripts\python.exe src/main.py --part 3
+.\.venv\Scripts\python.exe src/main.py --part 4
+.\.venv\Scripts\python.exe -m pytest tests/smoke tests/public tests/unit -q
+.\.venv\Scripts\python.exe scripts/grade.py --submission-dir . --out outputs/grade_report.json
+```
+
+CP2 và các test cục bộ không cần API key. CP3 cần OpenRouter; CP4 cần OpenAI
+hoặc Gemini. Key DeepSeek không thay thế được hai nhà cung cấp theo rubric.
+Thiếu key thật sẽ báo lỗi cấu hình và dừng, không tạo kết quả LLM giả.
+
+### Giải thích thiết kế
+
+- Input dùng chuẩn hóa NFKC, bỏ ký tự ẩn và đối chiếu không phân biệt dấu tiếng
+  Việt. Các regex bắt đổi vai, ghi đè hướng dẫn và yêu cầu lấy secret; email/RAG
+  được xem là dữ liệu, không có quyền thay đổi chính sách.
+- Output che SĐT, email, CMND/CCCD, password, API key và host nội bộ. Secret demo
+  bị tách ký tự, đảo ngược, base64, hex hoặc ROT13 cũng bị giữ lại.
+- Rate limit mặc định 10 request/60 giây/user, dùng đồng hồ monotonic. Suite kiểm
+  tra limiter bằng 15 lượt callback liên tiếp, không cần gọi LLM để đo giới hạn.
+  `rate_limit.passed` là số request được limiter cho qua.
+- Audit và monitoring là observer bên ngoài danh sách plugin; mỗi request có ID,
+  thời điểm, độ trễ và lớp chặn thực tế. Log được che PII/secret trước khi ghi.
+- Egress chỉ cho HTTPS tới đúng `api.vinbank.example` hoặc `cases.vinbank.example`,
+  cổng mặc định/443 và payload sạch; kiểm tra cả query string, không gửi HTTP thật.
+- Bộ test riêng kiểm tra phản hồi LLM giả trong thư mục tạm. Các fixture output
+  được ghi rõ nguồn `dataset_fixture`; chỉ lần chạy LLM thật tạo artifact nộp.
+- Lỗi provider được ghi nhận là lỗi runtime, không được tính là bảo vệ thành công.
+  Chức năng HITL chỉ định tuyến yêu cầu; repo không thực hiện giao dịch ngân hàng.
+
+`results.json` gồm 6 câu an toàn, 10 câu tấn công, 4 trường hợp biên, rate limit,
+kiểm tra output và egress. `attack_results.json` giữ đúng provider/model đã chạy;
+log chi tiết giữ toàn bộ hội thoại để đối chiếu và replay. Bonus B1/B2 và điểm
+cuối cùng do giảng viên xác nhận. Report được sinh bằng `scripts/grade.py`.
+
+Tài liệu starter bên dưới còn ví dụ Khóa 4 và khác biệt về deadline; khi nộp,
+đối chiếu quy ước Khóa 5 ở `SUBMISSION.md` với thông báo của lớp thực tế.
+
+---
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** đóng vai **Blue Team** để học cách xây Guardrails phòng thủ, rồi đóng vai **Red Team** để tấn công agent **Red** hoặc **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).

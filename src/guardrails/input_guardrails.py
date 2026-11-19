@@ -18,6 +18,25 @@ from google.adk.plugins import base_plugin
 from google.adk.agents.invocation_context import InvocationContext
 
 from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
+from guardrails.text_security import contains_protected_value, policy_text
+
+MAX_INPUT_LENGTH = 10000
+
+INJECTION_PATTERNS = (
+    r"\bignore\s+(?:all\s+)?(?:previous|above|prior)?\s*instructions?\b",
+    r"\b(?:disregard|forget|override)\b.{0,60}\b(?:instructions?|rules?|prompt)\b",
+    r"\byou\s+are\s+now\b",
+    r"\b(?:system|developer)\s+(?:prompt|instructions?|override)\b",
+    r"\breveal\s+(?:your\s+)?(?:instructions?|prompt)\b",
+    r"\bpretend\s+(?:you\s+are|to\s+be)\b",
+    r"\bact\s+as\s+(?:(?:a|an)\s+)?(?:unrestricted|evil|jailbroken)\b",
+    r"\b(?:dan mode|do anything now|jailbreak|developer mode)\b",
+    r"\b(?:admin\s+password|api[ _-]*key|database\s+host|connection\s+string|internal\s+(?:notes?|config|credentials?))\b",
+    r"\b(?:reveal|disclose|print|translate|encode|repeat|complete|confirm)\b.{0,100}\b(?:secrets?|credentials?)\b",
+    r"\bbo\s+qua\b.{0,40}\b(?:huong\s+dan|quy\s+tac)\b",
+    r"\b(?:tiet\s+lo|hien\s+thi|cho\s+toi\s+xem)\b.{0,80}\b(?:mat\s+khau|bi\s+mat|cau\s+hinh\s+noi\s+bo)\b",
+    r"\b(?:base64|rot13|hex)\b.{0,100}\b(?:password|secret|credential|internal)\b",
+)
 
 # Quyết định rõ ràng — tránh đảo nghĩa True/False
 InputStatus = Literal["ALLOW", "BLOCK"]
@@ -51,14 +70,13 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
-    ]
-
+    if not isinstance(user_input, str) or not user_input.strip() or len(user_input) > MAX_INPUT_LENGTH:
+        return "BLOCK"
+    normalized = policy_text(user_input)
+    if contains_protected_value(user_input):
+        return "BLOCK"
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, normalized, re.IGNORECASE):
             return "BLOCK"
     return "ALLOW"
 
@@ -84,14 +102,16 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
-    input_lower = user_input.lower()
-
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
-
-    pass  # Replace with your implementation
+    if not isinstance(user_input, str) or not user_input.strip():
+        return "BLOCK"
+    text = policy_text(user_input)
+    if any(re.search(r"\b" + re.escape(policy_text(topic)) + r"\b", text)
+           for topic in BLOCKED_TOPICS):
+        return "BLOCK"
+    topics = [*ALLOWED_TOPICS, "vinbank", "card", "cards", "fee", "fees",
+              "the ngan hang", "phi dich vu", "rut tien", "gui tien", "khoan vay"]
+    return "ALLOW" if any(re.search(r"\b" + re.escape(policy_text(topic)) + r"\b", text)
+                          for topic in topics) else "BLOCK"
 
 
 # ============================================================
@@ -112,6 +132,7 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         super().__init__(name="input_guardrail")
         self.blocked_count = 0
         self.total_count = 0
+        self.last_layer = None
 
     def _extract_text(self, content: types.Content) -> str:
         """Extract plain text from a Content object."""
@@ -144,14 +165,21 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
-
-        pass  # Replace with your implementation
+        self.last_layer = None
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            self.last_layer = "input_guardrail"
+            return self._block_response(
+                "Request blocked by input guardrail: invalid input or instruction override. "
+                "Please ask a VinBank banking question."
+            )
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            self.last_layer = "input_guardrail"
+            return self._block_response(
+                "Request blocked by input guardrail: I only help with VinBank banking topics."
+            )
+        return None
 
 
 # ============================================================

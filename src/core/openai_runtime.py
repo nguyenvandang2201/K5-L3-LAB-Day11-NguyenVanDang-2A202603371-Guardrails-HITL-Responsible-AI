@@ -9,7 +9,10 @@ Gemini Red Team dùng Google ADK trong agents/*.py — không đi qua file này.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
+import inspect
 from typing import Any, Callable
+from uuid import uuid4
 
 from core.config import (
     get_red_model,
@@ -34,6 +37,13 @@ class _MockInvocationContext:
 
 
 @dataclass
+class OpenAISession:
+    user_id: str
+    id: str = field(default_factory=lambda: uuid4().hex)
+    messages: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class OpenAIRunner:
     """Optional ADK-style plugins + Chat Completions."""
 
@@ -45,27 +55,32 @@ class OpenAIRunner:
     client_kwargs: dict = field(default_factory=dict)
     input_hooks: list[Callable[[str], str | None]] = field(default_factory=list)
     output_hooks: list[Callable[[str], str]] = field(default_factory=list)
+    sessions: dict[str, OpenAISession] = field(default_factory=dict)
 
     def _client(self):
         from openai import OpenAI
 
-        return OpenAI(**(self.client_kwargs or {}))
+        return OpenAI(timeout=60.0, max_retries=1, **(self.client_kwargs or {}))
 
-    async def chat(self, agent: OpenAIAgent, user_message: str) -> str:
+    async def chat(self, agent: OpenAIAgent, user_message: str, *,
+                   user_id: str = "student", session: OpenAISession | None = None) -> str:
+        if session is not None and session.user_id != user_id:
+            raise ValueError("Session belongs to a different user")
         for hook in self.input_hooks:
             blocked = hook(user_message)
             if blocked:
                 return blocked
 
-        block_msg = await self._run_input_plugins(user_message)
+        block_msg = await self._run_input_plugins(user_message, user_id=user_id)
         if block_msg is not None:
             return block_msg
 
         client = self._client()
-        completion = client.chat.completions.create(
+        completion = await asyncio.to_thread(client.chat.completions.create,
             model=self.model,
             messages=[
                 {"role": "system", "content": agent.instruction},
+                *(session.messages if session else []),
                 {"role": "user", "content": user_message},
             ],
             temperature=self.temperature,
@@ -76,31 +91,35 @@ class OpenAIRunner:
             text = hook(text)
 
         text = await self._run_output_plugins(text)
+        if session is not None:
+            session.messages.extend([
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": text},
+            ])
+            # Bound retained history; guardrails still check every new user turn.
+            session.messages[:] = session.messages[-40:]
         return text
 
-    async def _run_input_plugins(self, user_message: str) -> str | None:
+    async def _run_input_plugins(self, user_message: str, *, user_id: str = "student") -> str | None:
         if not self.plugins:
             return None
         try:
             from google.genai import types
-        except ImportError:
-            return None
+        except ImportError as exc:
+            raise RuntimeError("Input guardrails require google-genai") from exc
 
         user_content = types.Content(
             role="user",
             parts=[types.Part.from_text(text=user_message)],
         )
-        ctx = _MockInvocationContext()
+        ctx = _MockInvocationContext(user_id=user_id)
         for plugin in self.plugins:
             cb = getattr(plugin, "on_user_message_callback", None)
             if cb is None:
                 continue
-            try:
-                result = await cb(
-                    invocation_context=ctx, user_message=user_content
-                )
-            except TypeError:
-                result = cb(invocation_context=ctx, user_message=user_content)
+            result = cb(invocation_context=ctx, user_message=user_content)
+            if inspect.isawaitable(result):
+                result = await result
             if result is None:
                 continue
             return _content_to_text(result)
@@ -111,8 +130,8 @@ class OpenAIRunner:
             return text
         try:
             from google.genai import types
-        except ImportError:
-            return text
+        except ImportError as exc:
+            raise RuntimeError("Output guardrails require google-genai") from exc
 
         content = types.Content(
             role="model", parts=[types.Part.from_text(text=text)]
@@ -131,13 +150,13 @@ class OpenAIRunner:
             cb = getattr(plugin, "after_model_callback", None)
             if cb is None:
                 continue
-            try:
-                out = await cb(callback_context=_Ctx(), llm_response=llm_response)
-            except TypeError:
-                out = cb(callback_context=_Ctx(), llm_response=llm_response)
+            out = cb(callback_context=_Ctx(), llm_response=llm_response)
+            if inspect.isawaitable(out):
+                out = await out
             if out is not None and getattr(out, "content", None) is not None:
                 llm_response = out
-        return _content_to_text(llm_response.content) or text
+        # An intentionally empty replacement must never restore the unfiltered text.
+        return _content_to_text(llm_response.content)
 
 
 def _content_to_text(content: Any) -> str:

@@ -86,13 +86,18 @@ class ConfidenceRouter:
         #      action="escalate", priority="high",
         #      requires_human=True, reason="Low confidence — escalating"
 
-        return RoutingDecision(
-            action="auto_send",
-            confidence=confidence,
-            reason="TODO: implement routing logic",
-            priority="low",
-            requires_human=False,
-        )  # TODO: Replace with implementation
+        import math
+
+        if action_type in HIGH_RISK_ACTIONS:
+            return RoutingDecision("escalate", confidence,
+                                   f"High-risk action: {action_type}", "high", True)
+        if not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+            return RoutingDecision("escalate", confidence, "Invalid confidence score", "high", True)
+        if confidence >= self.HIGH_THRESHOLD:
+            return RoutingDecision("auto_send", confidence, "High confidence", "low", False)
+        if confidence >= self.MEDIUM_THRESHOLD:
+            return RoutingDecision("queue_review", confidence, "Medium confidence — needs review", "normal", True)
+        return RoutingDecision("escalate", confidence, "Low confidence — escalating", "high", True)
 
 
 # ============================================================
@@ -115,33 +120,33 @@ class ConfidenceRouter:
 hitl_decision_points = [
     {
         "id": 1,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
-        "approval_path": "TODO: Explain approve, reject and timeout behavior",
-        "audit_fields": "TODO: List correlation ID, intent, diff and reviewer decision",
+        "name": "Approve a money transfer",
+        "trigger": "Any transfer_money action, regardless of model confidence",
+        "hitl_model": "human-in-the-loop",
+        "context_needed": "Authenticated customer, amount, recipient, destination and proposed action",
+        "example": "A request to transfer 5000000 VND from an account",
+        "approval_path": "An authenticated reviewer approves the exact action; rejection or timeout cancels it",
+        "audit_fields": "request_id, customer_id, action_digest, approval_id, reviewer_id, decision, timestamp",
     },
     {
         "id": 2,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
-        "approval_path": "TODO: Explain approve, reject and timeout behavior",
-        "audit_fields": "TODO: List correlation ID, intent, diff and reviewer decision",
+        "name": "Review an uncertain customer answer",
+        "trigger": "Confidence from 0.7 up to but excluding 0.9",
+        "hitl_model": "human-as-tiebreaker",
+        "context_needed": "Customer question, proposed answer, verified product references and uncertainty",
+        "example": "Ambiguous eligibility for a loan fee waiver",
+        "approval_path": "Hold the answer until reviewed; rejected or expired answers are escalated",
+        "audit_fields": "request_id, draft_digest, confidence, source_ids, reviewer_id, final_answer, decision",
     },
     {
         "id": 3,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
-        "approval_path": "TODO: Explain approve, reject and timeout behavior",
-        "audit_fields": "TODO: List correlation ID, intent, diff and reviewer decision",
+        "name": "Investigate a security alert",
+        "trigger": "Block rate, rate-limit hits or safety-judge failure exceeds its threshold",
+        "hitl_model": "human-on-the-loop",
+        "context_needed": "Sanitized audit events, affected users, active guardrails and metrics window",
+        "example": "A burst of credential-extraction attempts triggers an alert",
+        "approval_path": "A reviewer investigates; existing blocks stay enforced during review and timeout",
+        "audit_fields": "alert_id, request_ids, metric_snapshot, reviewer_id, mitigation, decision, timestamp",
     },
 ]
 

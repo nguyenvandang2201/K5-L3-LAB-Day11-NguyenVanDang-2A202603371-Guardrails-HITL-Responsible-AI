@@ -139,7 +139,9 @@ def get_red_provider() -> str:
     ).strip().lower()
     if raw in {"gemini", "google", "adk"}:
         return PROVIDER_GEMINI
-    return PROVIDER_OPENAI
+    if raw == PROVIDER_OPENAI:
+        return PROVIDER_OPENAI
+    raise ValueError("RED_TEAM_PROVIDER must be openai or gemini for this lab")
 
 
 def get_red_model() -> str:
@@ -234,34 +236,32 @@ def is_harder_model() -> bool:
     return any(x in m for x in ("gpt-5.6", "pro", "gemini-3.8", "gemini-3.7"))
 
 
-def setup_api_key():
-    """Ensure keys for Blue (OpenRouter) + Red / Red Advance (OpenAI or Gemini)."""
-    if not get_openrouter_api_key():
-        os.environ["OPENROUTER_API_KEY"] = input(
-            "Enter OpenRouter API Key (Blue): "
-        ).strip()
-    print(f"Blue  — {blue_provider_label()}  [LOCKED]")
+class ConfigurationError(RuntimeError):
+    """A missing local credential prevents a live checkpoint from running."""
 
-    red = get_red_provider()
-    model = get_red_model()
-    if red == PROVIDER_GEMINI:
-        if not os.environ.get("GOOGLE_API_KEY", "").strip():
-            os.environ["GOOGLE_API_KEY"] = input("Enter Google API Key (Red): ").strip()
-        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "0"
-        print(f"Red / Red Advance  — gemini:{model}")
-    else:
-        if not get_openai_api_key():
-            os.environ["OPENAI_API_KEY"] = input("Enter OpenAI API Key (Red): ").strip()
-        print(f"Red / Red Advance  — openai:{model}")
 
-    print(
-        "Bonus: chọn một — Red tối đa +5 (B1) hoặc Red Advance tối đa +10 (B2)."
-    )
-    if is_harder_model():
-        print(
-            f"Model khó ({model}) — tuỳ chọn; không đổi tên agent. "
-            f"(Gợi ý: {HARD_OPENAI_MODEL} / {HARD_GEMINI_MODEL})"
-        )
+def setup_api_key(parts=None):
+    """Validate only the credentials needed for the selected checkpoints.
+
+    CP2 is deterministic and needs no key. Never prompt for a visible secret in
+    the terminal or silently treat the example placeholders as real keys.
+    """
+    selected = set(parts if parts is not None else [2, 3, 4])
+    required = []
+    if 3 in selected:
+        required.append("OPENROUTER_API_KEY")
+        print(f"Blue — {blue_provider_label()} [LOCKED]")
+    if 4 in selected:
+        required.append("GOOGLE_API_KEY" if red_uses_gemini() else "OPENAI_API_KEY")
+        if red_uses_gemini():
+            os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "0"
+        print(f"Red / Red Advance — {red_provider_label()}")
+    missing = [name for name in required
+               if not os.environ.get(name, "").strip()
+               or "..." in os.environ.get(name, "")
+               or os.environ.get(name, "").startswith("your-")]
+    if missing:
+        raise ConfigurationError("Điền key thật trong file .env: " + ", ".join(missing))
 
 
 ALLOWED_TOPICS = [

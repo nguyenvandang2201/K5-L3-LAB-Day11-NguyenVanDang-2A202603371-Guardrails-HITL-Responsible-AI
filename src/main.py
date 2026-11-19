@@ -24,7 +24,7 @@ _SRC_DIR = Path(__file__).resolve().parent
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from core.config import setup_api_key
+from core.config import ConfigurationError, setup_api_key
 
 
 async def part2_guardrails():
@@ -63,22 +63,13 @@ async def part3_assignment_suite():
         run_assignment_suite,
     )
 
-    try:
-        plugins = build_production_plugins(use_llm_judge=False)
-        audit, monitor = build_observability()
-        pipeline = {"plugins": plugins, "audit": audit, "monitor": monitor}
-        result = await run_assignment_suite(pipeline)
-        print("Suite finished.")
-        print("Wrote outputs under repo outputs/")
-        return result
-    except NotImplementedError as e:
-        print(
-            "Chưa xong Checkpoint 3 (src/assignment/pipeline.py). "
-            "Hoàn thành rồi chạy lại từ gốc repo:\n"
-            "  python src/main.py --part 3"
-        )
-        print(f"Detail: {e}")
-        return None
+    plugins = build_production_plugins(use_llm_judge=False)
+    audit, monitor = build_observability()
+    pipeline = {"plugins": plugins, "audit": audit, "monitor": monitor}
+    result = await run_assignment_suite(pipeline)
+    print("Suite finished.")
+    print("Wrote outputs under repo outputs/")
+    return result
 
 
 async def part4_attacks():
@@ -134,10 +125,9 @@ async def part4_attacks():
 
 
 async def main(parts=None):
-    setup_api_key()
-
     if parts is None:
         parts = [2, 3, 4]  # Core: CP2 → CP3 → CP4
+    setup_api_key(parts)
 
     for part in parts:
         if part == 2:
@@ -169,7 +159,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.part:
-        asyncio.run(main(parts=[args.part]))
-    else:
-        asyncio.run(main())
+    try:
+        asyncio.run(main(parts=[args.part] if args.part else None))
+    except ConfigurationError as exc:
+        parser.exit(2, f"Configuration error: {exc}\n")
